@@ -1,71 +1,32 @@
 // "awi" crate - Licensed under the MIT LICENSE
 //  * Copyright (c) 2017-2018  Jeron A. Lau <jeron.lau@plopgrizzly.com>
 
+use std::ptr::null_mut;
+
 use input;
-use libc::c_void;
 // use input::keyboard::{ english, FSC, ESC }; TODO
-use super::types::*;
+
+use winapi::um::winuser::{
+	WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_VSCROLL,
+	WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CLOSE, WM_MOUSEMOVE, WM_HSCROLL, 
+	WM_CHAR, WM_SYSCHAR, VK_RSHIFT,
+	PeekMessageW, TranslateMessage, DispatchMessageW, GetCursorPos,
+	ScreenToClient, PostQuitMessage, DefWindowProcW,
+	MSG,
+};
+use winapi::ctypes::c_int;
+use winapi::shared::windef::{ HWND, POINT };
+use winapi::shared::minwindef::{ WPARAM, LPARAM, LRESULT, HIWORD, LOWORD, DWORD };
 
 static mut ADI_WNDPROCMSG : u8 = 0b0000_0000;
 static mut AWI_DIMENSIONS: (u32, u32) = (0, 0);
 
-const RESIZED : u8 = 0b1000_0000;
-const PAUSED : u8 = 0b0100_0000;
-const RESUMED : u8 = 0b0010_0000;
+const RESIZED: u8 = 0b1000_0000;
+const PAUSED: u8 = 0b0100_0000;
+const RESUMED: u8 = 0b0010_0000;
 
-// const KEY_DOWN: u32 = 2;
-// const KEY_UP: u32 = 3;
-const CURSOR_MOVE: u32 = 0x0200;
-// const CURSOR_ENTER: u32 = 7;
-// const CURSOR_LEAVE: u32 = 8;
-// const GAIN_FOCUS: u32 = 9;
-// const LOSE_FOCUS: u32 = 10;
-// const WINDOW_RESIZE: u32 = 22;
-const WINDOW_CLOSE: u32 = 0x0012;
-
-const LBUTTON_DOWN: u32 = 0x0201;
-const LBUTTON_UP: u32 = 0x0202;
-const MBUTTON_DOWN: u32 = 0x0207;
-const MBUTTON_UP: u32 = 0x0208;
-const RBUTTON_DOWN: u32 = 0x0204;
-const RBUTTON_UP: u32 = 0x0205;
-const SCROLL: u32 = 0x020A;
-const CHAR: u32 = 0x0102;
-const SYSCHAR: u32 = 0x0106;
-
-const LSHIFT : u32 = 16;
-const RSHIFT : u32 = 16 | (0b_0011_0110 << 16);
-
-#[repr(C)]
-struct Point {
-	x: i32, // long
-	y: i32, // long
-}
-
-#[repr(C)]
-struct Msg {
-	hwnd: Hwnd,
-	message: u32,
-	w_param: Wparam,
-	l_param: Lparam,
-	time: u32,
-	pt: Point,
-}
-
-extern "system" {
-	fn PeekMessageW(lpMsg: *mut Msg, h_wnd: Hwnd, msg_filter_min: u32,
-		msg_filter_max: u32, remove_msg: u32) -> Bool;
-	fn TranslateMessage(lpMsg: *const Msg) -> Bool;
-	fn DispatchMessageW(lpMsg: *const Msg) -> Lresult;
-	fn GetCursorPos(point: *mut Point) -> Bool;
-	fn ScreenToClient(h_wnd: Hwnd, point: *mut Point) -> Bool;
-	fn PostQuitMessage(exit_code: i32) -> ();
-	fn DefWindowProcW(hw: Hwnd, uMsg: u32, wParam: *const c_void,
-		lParam: *const c_void) -> Lresult;
-}
-
-pub extern "C" fn wnd_proc(h_wnd: Hwnd, u_msg: u32, w_param: *const c_void,
-	l_param: *const c_void) -> Lresult
+pub extern "system" fn wnd_proc(h_wnd: HWND, u_msg: u32, w_param: WPARAM,
+	l_param: LPARAM) -> LRESULT
 {
 	match u_msg {
 		0x0007 => unsafe { ADI_WNDPROCMSG |= RESUMED },
@@ -77,9 +38,8 @@ pub extern "C" fn wnd_proc(h_wnd: Hwnd, u_msg: u32, w_param: *const c_void,
 		0x0005 => {
 			unsafe { ADI_WNDPROCMSG |= RESIZED };
 
-			let i = unsafe { ::std::mem::transmute::<*const c_void, usize>(l_param) };
-			let h = (i & 0xFFFF_0000) / 0x1_0000;
-			let w = i & 0x0000_FFFF;
+			let h = HIWORD(l_param as DWORD);
+			let w = LOWORD(l_param as DWORD);
 
 			unsafe { AWI_DIMENSIONS = (w as u32, h as u32); }
 
@@ -93,10 +53,10 @@ pub extern "C" fn wnd_proc(h_wnd: Hwnd, u_msg: u32, w_param: *const c_void,
 	}
 }
 
-fn get_mouse(window: Hwnd, wh: &(u32, u32), is_miw: &mut bool)
+fn get_mouse(window: HWND, wh: &(u32, u32), is_miw: &mut bool)
 	-> (i16, i16, bool)
 {
-	let mut pos = Point { x: 0, y: 0 };
+	let mut pos = POINT { x: 0, y: 0 };
 	unsafe {
 		GetCursorPos(&mut pos);
 		ScreenToClient(window, &mut pos);
@@ -114,26 +74,23 @@ fn get_mouse(window: Hwnd, wh: &(u32, u32), is_miw: &mut bool)
 	(pos.x as i16, pos.y as i16, miw_changed)
 }
 
-fn create_key_id(w: Wparam, l: Lparam) -> u32 {
-	const RCONTROL : u32 = 17 | (0b_1_0001_1101 << 16);
-	const RALT: u32 = 18 | (0b_1_0011_1000 << 16);
+fn create_key_id(w: WPARAM, l: LPARAM) -> c_int {
+	const RCONTROL : c_int = 17 | (0b_1_0001_1101 << 16);
+	const RALT: c_int = 18 | (0b_1_0011_1000 << 16);
 
 	let scan = l & 0b00000001_11111111_00000000_00000000;
 	
-	match (w as u32) | ( scan as u32) {
-		d @ RSHIFT => d,
+	match (w as c_int) | ( scan as c_int) {
+		d @ VK_RSHIFT => d,
 		d @ RCONTROL => d,
 		d @ RALT => d,
-		_ => (w as u32),
+		_ => (w as c_int),
 	}
 }
 
-pub fn window_poll_event(window: Hwnd, queue: &mut input::InputQueue,
+pub fn window_poll_event(window: HWND, queue: &mut input::InputQueue,
 	miw: &mut bool, wh: &mut (u32, u32), keyboard: &mut ::Keyboard) -> bool
 {
-	let mut msg = Msg { hwnd: Hwnd::null(), message: 0, w_param: 0, l_param: 0,
-		time: 0, pt: Point { x: 0, y: 0 } };
-
 	if unsafe { ADI_WNDPROCMSG & RESIZED != 0 } {
 		println!("RESIZE {:?}", unsafe { AWI_DIMENSIONS });
 		queue.resize(wh, unsafe { AWI_DIMENSIONS });
@@ -161,22 +118,24 @@ pub fn window_poll_event(window: Hwnd, queue: &mut input::InputQueue,
 		return true;
 	}
 
+	let mut msg = MSG { hwnd: null_mut(), message: 0, wParam: 0, lParam: 0,
+		time: 0, pt: POINT { x: 0, y: 0 } };
 	if unsafe {
-		PeekMessageW(&mut msg, Hwnd::null(), 0, 0, 0x0001)
+		PeekMessageW(&mut msg, null_mut(), 0, 0, 0x0001)
 	} == 0 { // no messages available
 		return false;
 	}
 	match msg.message {
-		WINDOW_CLOSE => queue.back(),
-		CURSOR_MOVE => queue.cursor_move(*wh, (x, y)),
-		LBUTTON_DOWN => queue.left_button_press(*wh, (x, y)),
-		LBUTTON_UP => queue.left_button_release(*wh, (x, y)),
-		MBUTTON_DOWN => queue.middle_button_press(*wh, (x, y)),
-		MBUTTON_UP => queue.middle_button_release(*wh, (x, y)),
-		RBUTTON_DOWN => queue.right_button_press(*wh, (x, y)),
-		RBUTTON_UP => queue.right_button_release(*wh, (x, y)),
+		WM_CLOSE => queue.back(),
+		WM_MOUSEMOVE => queue.cursor_move(*wh, (x, y)),
+		WM_LBUTTONDOWN => queue.left_button_press(*wh, (x, y)),
+		WM_LBUTTONUP => queue.left_button_release(*wh, (x, y)),
+		WM_MBUTTONDOWN => queue.middle_button_press(*wh, (x, y)),
+		WM_MBUTTONUP => queue.middle_button_release(*wh, (x, y)),
+		WM_RBUTTONDOWN => queue.right_button_press(*wh, (x, y)),
+		WM_RBUTTONUP => queue.right_button_release(*wh, (x, y)),
 		0x0100 | 0x0104 => {
-			let detail = create_key_id(msg.w_param, msg.l_param);
+			let detail = create_key_id(msg.wParam, msg.lParam);
 			
 			if let Some(key) = input::key(detail) {
 				keyboard.press(key);
@@ -188,18 +147,18 @@ pub fn window_poll_event(window: Hwnd, queue: &mut input::InputQueue,
 			}
 		}
 		0x0101 | 0x0105 => {
-			let detail = create_key_id(msg.w_param, msg.l_param);
+			let detail = create_key_id(msg.wParam, msg.lParam);
 
 			// A workaround for a bug in windows, when RSHIFT is
 			// released while LSHIFT is still pressed, there is no
 			// separate release event for LSHIFT.
-			if detail == RSHIFT {
-				keyboard.release(input::key(LSHIFT).unwrap());
-			}
+//			if detail == RSHIFT {
+//				keyboard.release(input::key(LSHIFT).unwrap());
+//			}
 			// And vice versa
-			if detail == LSHIFT {
-				keyboard.release(input::key(RSHIFT).unwrap());
-			}
+//			if detail == LSHIFT {
+//				keyboard.release(input::key(RSHIFT).unwrap());
+//			}
 
 			if let Some(key) = input::key(detail) {
 				keyboard.release(key);
@@ -208,13 +167,25 @@ pub fn window_poll_event(window: Hwnd, queue: &mut input::InputQueue,
 			// Required to generate CHAR & SYSCHAR
 			unsafe { TranslateMessage(&msg); }
 		}
-		CHAR | SYSCHAR => {
-			let c = msg.w_param as u16;
+		WM_CHAR | WM_SYSCHAR => {
+			let c = msg.wParam as u16;
 			
 			queue.text(String::from_utf16(&[c]).unwrap());
 		}
-		SCROLL => {
-			let a = (((msg.w_param as u32) >> 16) & 0xFFFF)
+		WM_HSCROLL => {
+			let a = (((msg.wParam as u32) >> 16) & 0xFFFF)
+				as i16;
+
+			if a > 0 {
+				queue.scroll(*wh, (x, y),
+					(a as f32 / -120.0, 0.0));
+			} else {
+				queue.scroll(*wh, (x, y),
+					(a as f32 / 120.0, 0.0));
+			}
+		}
+		WM_VSCROLL => {
+			let a = (((msg.wParam as u32) >> 16) & 0xFFFF)
 				as i16;
 
 			if a > 0 {
